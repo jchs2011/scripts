@@ -1,0 +1,149 @@
+#!/bin/bash
+##############################################################################
+# Mutify - Spotify with mute patterns. Useful for muting "songs" you don't like!
+#
+# AUTHOR:   Martin (bumby) Stenberg
+# VERSION:  0.2 2010-07-06
+
+##############################################################################
+# Configuration
+if [ -f "$HOME/.mutifyrc" ]; then
+    . $HOME/.mutifyrc
+else
+cat << EOF > $HOME/.mutifyrc
+MUTIFY_PATTERNS=\$HOME/.mutifypatterns
+CHANNEL="Headphone"
+SPOTIFY="\$HOME/.wine/drive_c/Program Files/Spotify/spotify.exe"
+MIXER_MUTE="ossmix codec1.misc.front-mute on"
+MIXER_UNMUTE="ossmix codec1.misc.front-mute off"
+EOF
+fi
+
+##############################################################################
+# Variable declarations
+ADD_PATTERN=""
+ADD_CURRENT=""
+PRINT=""
+DEBUG=""
+
+##############################################################################
+# Helper functions
+function usage {
+    echo "Usage: $(basename $0) [OPTION...]"
+    echo "Mutes audio when Spotify music title matches preconfigured patterns"
+    echo
+    echo "  -a PATTERN       Add PATTERN to mute-list"
+    echo "  -c               Add current title to mute-list"
+    echo "  -d               Debug mode"
+    echo "  -h               Print this help and exit"
+    echo "  -p               Print current title and exit"
+}
+
+function get_title {
+    TITLE=$(xwininfo -root -tree|grep '0x[a-f0-9]\+ "Spotify -[^"]\+": ("spotify\.exe"'|sed -r 's/^\s+0x[a-f0-9]+ "([^"]+)":.*/\1/g')
+}
+
+function add_pattern {
+    echo "$@" >> $MUTIFY_PATTERNS 
+    [ -n "$DEBUG" ] && alert "Added pattern: $@"
+}
+
+function add_current {
+    get_title
+    [ -n "$TITLE" ] && add_pattern "$TITLE"
+}
+
+function mute {
+    ${MIXER_MUTE}
+    [ -n "$DEBUG" ] && alert "Muted"
+}
+
+function unmute {
+    ${MIXER_UNMUTE}
+    [ -n "$DEBUG" ] && alert "Unmuted"
+}
+
+function alert {
+    echo -e "$@"
+}
+
+##############################################################################
+# Main
+while getopts "a:pdch" opt; do
+    case "$opt" in
+        a) ADD_PATTERN="$OPTARG";;
+        c) ADD_CURRENT="1";;
+        p) PRINT="1";;
+        d) DEBUG="1";;
+        h) usage;exit 0;;
+        [?]) usage;;
+    esac
+done
+
+if [ -n "$PRINT" ]; then
+    get_title
+    echo "$TITLE"
+    exit 0
+fi
+
+if [ -n "$ADD_CURRENT" ]; then
+    add_current
+    exit 0
+fi
+
+if [ -n "$ADD_PATTERN" ]; then
+    add_pattern "$ADD_PATTERN"
+    exit 0
+fi
+
+#######################
+# There can be only one
+if [ -n "$(pidof "$SPOTIFY")" ];then
+    alert "Spotify already running. Please close it and start Mutify again."
+    exit 1
+fi
+
+###############
+# Start Spotify
+if [ -n "$DEBUG" ]; then alert "Starting Spotify"; fi
+wine "$SPOTIFY" 2>/dev/null &
+
+##########################
+# Wait for Spotify startup 
+echo -n "Please wait " > /dev/stderr
+while [ -z "$(pidof spotify.exe)" ];do echo -n "." > /dev/stderr;sleep 1;done
+echo
+
+########################
+# Run pattern-check loop
+muted=0
+while [ -n "$(pidof spotify.exe)" ];do
+    matched=0
+
+    #############################################
+    # Look for mute-pattern in Spotify window title
+    get_title
+    if [ -n "$TITLE" ];then
+        match=$(echo -n "$TITLE" | grep -f $MUTIFY_PATTERNS)
+        [ $? -eq 0 ] && matched=1
+    fi
+
+    #############################
+    # Mute iff matched mute-pattern
+    if [ $matched -eq 1 ]; then
+        if [ $muted -ne 1 ]; then
+            [ -n "$DEBUG" ] && alert "Matched: $match"
+            muted=1
+            mute
+        fi
+    else 
+        if [ $muted -eq 1 ]; then
+            muted=0
+            unmute
+        fi
+    fi
+
+    sleep 1
+done
+
+unmute

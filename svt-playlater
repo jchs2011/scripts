@@ -1,0 +1,43 @@
+#!/bin/bash
+##############################################################################
+# svt-playlater - Download video from svt-play for later consumption.
+#
+# AUTHOR:   Martin (bumby) Stenberg
+# VERSION:  0.1 2011-04-06
+
+##############################################################################
+if [ $# -lt 1 ]
+then
+    echo "Usage: $0 <url>"
+    exit 1
+fi
+
+
+URL=$(curl --stderr /dev/null $1|grep "<video id" | sed 's/.*src="\([^"]\+\)".*/\1/')
+PNAME=$(echo $1|sed 's/^.\+\/\([^\/]\+\)\?.*/\1/')
+PNAME="${PNAME}.ts"
+BURL=$(echo $URL|sed 's/^\(.\+\)\/[^\/]\+/\1/')
+PURL=$(curl --stderr /dev/null $URL | tail -n 1 | tr -d '\r')
+PARTS=$(curl --stderr /dev/null "${BURL}/${PURL}" | grep "\.ts$")
+
+if [ -e "$PNAME" ]
+then
+    echo "Warning: This will over write $PNAME"
+    echo "Press ENTER to continue or CTRL+c to quit!"
+    read
+fi
+
+num=$(echo $PARTS|wc -w)
+i=1
+for part in $PARTS
+do
+    TMP=$(mktemp)
+    PARTURL=$(echo "${BURL}/$part"|tr -d '\r')
+    echo -n -e "\rDownloading part $i/$num ..."
+    wget -q -O "$TMP" "$PARTURL"
+    cat "$TMP" >> "${PNAME}"
+    rm "$TMP"
+    let i=$i+1
+done
+
+echo "Done! File saved to: $PNAME"
