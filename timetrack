@@ -1,0 +1,255 @@
+#!/bin/bash
+# AUTHOR Martin Stenberg <martin@ossware.com>
+# VERSION 0.0.3
+
+check_file () 
+{
+	if [ ! -w "$TIMETRACK" ] && [ "$TIMETRACK" != "-" ]; then
+		echo "Error: Cannot access file: $OPTARG"
+		exit 1
+	fi
+}
+
+init ()
+{
+    touch "${TIMETRACK}"
+	check_file
+    echo "Time tracking to ${TIMETRACK}"
+}
+
+check_in ()
+{
+	check_file
+    is_in
+    if [ $? -eq 1 ]; then
+        echo "Error: You are already signed in"
+        return
+    fi
+    TIME=$(date +"%Y-%m-%d %H:%M:%S %z")
+    echo -e "in\t${EMAIL}\t${TIME}" >> "${TIMETRACK}"
+}
+
+check_out ()
+{
+	check_file
+    is_in
+    if [ $? -eq 0 ]; then
+        echo "Error: You are not signed in"
+        return
+    fi
+    TIME=$(date +"%Y-%m-%d %H:%M:%S %z")
+    echo -e "out\t${EMAIL}\t${TIME}" >> "${TIMETRACK}"
+}
+
+is_in ()
+{
+	check_file
+    if [ ! -f "${TIMETRACK}" ]
+    then
+        echo "Directory not under timetrack"
+        exit 1
+    fi
+
+    LINE=$(tac "${TIMETRACK}"|grep -m1 ${EMAIL}|cut -f1)
+    if [ "$LINE" == "in" ]; then
+        return 1
+    fi
+    return 0
+}
+
+stat () 
+{
+	check_file
+    if [ ! -f "${TIMETRACK}" ]
+    then
+        echo "Directory not under timetrack"
+        exit 1
+    fi
+
+    LINE=$(tac "${TIMETRACK}"|grep -m1 ${EMAIL}|cut -f1,3 --output-delimiter ";")
+    INOUT=$(echo $LINE|cut -d';' -f1)
+    if [ "$INOUT" == "in" ]; then
+        TIME=$(date +%s -d"`echo $LINE|cut -d';' -f2`")
+        NOW=$(date +%s)
+        let TDELTA=$NOW-$TIME
+        let HRS=$TDELTA/$((60*60))
+        let MINS=($TDELTA - $HRS*60*60)/60
+        let SECS=$TDELTA%60
+        echo "$HRS hours $MINS minutes $(printf %02d $SECS) seconds"
+    else
+        echo "You are not signed in"
+    fi
+}
+
+prompt () 
+{
+    RED="\[\033[01;31m\]"
+    GREEN="\[\033[01;32m\]"
+    YELLOW="\[\033[01;33m\]"
+
+    if [ -e "${TIMETRACK}" ]
+    then
+        LINE=$(tac "${TIMETRACK}"|grep -m1 ${EMAIL}|cut -f1,3 --output-delimiter ";")
+        INOUT=$(echo $LINE|cut -d';' -f1)
+        if [ "$INOUT" == "in" ]; then
+            TIME=$(date +%s -d"`echo $LINE|cut -d';' -f2`")
+            NOW=$(date +%s)
+            let TDELTA=$NOW-$TIME
+            let HRS=$TDELTA/$((60*60))
+            let MINS=($TDELTA - $HRS*60*60)/60
+            let SECS=$TDELTA%60
+            STATUS="${GREEN}$HRS:$MINS:$(printf %02d $SECS) "
+        else
+            STATUS="${YELLOW}Out "
+        fi
+    else
+        STATUS=""
+    fi
+
+    echo -n "$STATUS"
+}
+
+prompt_command () 
+{
+    echo "PROMPT_COMMAND='[ -z \"\$PS1OLD\" ] && PS1OLD=\$PS1;PS1=\"\$(timetrack prompt)\$PS1OLD\"'"
+}
+
+report ()
+{
+	check_file
+    awkscript="
+        BEGIN {
+            from = \"$1\"
+            to = \"$2\"
+
+            # bug workaround for awk getline - cannot distinguish two identical pipes
+            if(from == to && to!=\"\") {
+                to = to \" 00:00:00\" 
+            }
+
+            from = from == \"\" ? \"1970-01-01\" : from
+            to = to == \"\" ? strftime(\"%F %T\",systime()) : to
+            cmd = sprintf(\"date +%%s -d'%s'\", from); cmd|getline from;
+            cmd = sprintf(\"date +%%s -d'%s'\", to); cmd|getline to;
+        }
+
+        function hms(s)
+        {
+            h=int(s/3600);
+            s=s-(h*3600);
+            m=int(s/60);
+            s=s-(m*60);
+            return sprintf(\"%d:%02d:%02d\", h, m, s);
+        }
+
+        {
+            inout = \$1
+            user = \$2
+            time = \$3
+            gsub(/(-|:)/, \" \", time)
+            time = mktime(time)
+
+            if (time >= from && time <= to)
+            {
+                if ( inout == \"in\" )
+                {
+                    inout_hash[user] = time
+                }
+                else
+                {
+                    if(inout_hash[user] <= 0) { next }
+                    tdelta = time - inout_hash[user]
+                    total_hash[user] += tdelta
+                }
+            }
+        }
+
+        END {
+            tot = 0
+            if(\"$1\" != \"\") {
+                printf(\"%s to %s\n\", strftime(\"%F\", from), strftime(\"%F\", to))
+            }
+            print \"User\t\t\tTime\"
+            print \"-------------------------------\"
+            for( u in total_hash )
+            {
+                tot += total_hash[u]
+                print u \"\t\" hms(total_hash[u])
+            }
+
+            print \"-------------------------------\"
+            print \"Total: \t\t\t\" hms(tot)
+        }"
+
+    cat "${TIMETRACK}" | awk -F'\t' "$awkscript"
+}
+
+usage ()
+{
+    echo "Usage: timetrack [-g] [-t FILENAME] <init|in|out|status|report|help>"
+    echo " -g                                   Time track to current git root instead of $(pwd)"
+	echo " -t FILENAME                          Time track to FILENAME instead of $(pwd). Use FILENAME \"-\" for stdin."
+    echo " init                                 Initialize new time tracker"
+    echo " in                                   Check in"
+    echo " out                                  Check out"
+    echo " status                               Print time you have currently spent on active session"
+    echo " promptcmd                            Print PROMPT_COMMAND to set PS1 to display timetrack status"
+    echo " report <start date> <end date>       Print full report summarizing all hours spent on current project"
+    echo " help                                 Prints this usage message"
+	echo
+	echo " Exampels:"
+	echo "  Print a report for all projects under ~/projects"
+	echo "  $ find ~/projects -type f -name TIMETRACK -exec cat {} \; | timetrack -t - report"
+	echo 
+	echo "  Print a report for project under git between 2010-09-01 and 2010-10-01"
+	echo "  $ timetrack -g report 2010-09-01 2010-10-01"
+    exit 2
+}
+
+# main
+TIMETRACK="TIMETRACK"
+while getopts "gt:" opt
+do
+	case $opt in
+		g)	arg_gitroot=1;
+			GITROOT=$(git rev-parse --show-cdup &> /dev/null)
+			if [ $? -ne 0 ]; then
+				echo "Error: Cannot access git root"
+				exit 1
+			fi
+
+			TIMETRACK="${GITROOT}TIMETRACK"
+			;;
+		t) arg_timetrackfile="$OPTARG";
+			TIMETRACK="$OPTARG"
+			;;
+		?) usage;;
+	esac
+done
+shift $(($OPTIND - 1))
+
+EMAIL=$(git config --global --get user.email)
+if [ $? -ne 0 ]; then
+    echo "Error: Could not retrieve user email address"
+    exit 1
+fi
+
+case "$1" in
+[iI][nN][iI][tT]) init
+    ;;
+[iI][nN]) check_in
+    ;;
+[oO][uU][tT]) check_out
+    ;;
+[sS][tT][aA][tT][uU][sS]) stat
+    ;;
+[pP][rR][oO][mM][pP][tT][cC][mM][dD]) prompt_command
+    ;;
+[pP][rR][oO][mM][pP][tT]) prompt
+    ;;
+[rR][eE][pP][oO][rR][tT]) report "$2" "$3"
+    ;;
+*) usage
+    ;;
+esac
+exit 0

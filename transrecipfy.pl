@@ -1,7 +1,7 @@
 #!/usr/bin/perl
 =head1 Author: Martin (bumby) Stenberg <bumbyn@gmail.com>
 Name: transrecipfy
-Description: Translate crazy unti-recipes to metric
+Description: Translate crazy unit-recipes to metric
 Start date: 2001-something-something
 Last updated Date: 2002-something-something
 =cut
